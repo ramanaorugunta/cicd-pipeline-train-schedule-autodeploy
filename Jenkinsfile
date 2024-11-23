@@ -1,83 +1,42 @@
 pipeline {
-    agent {
-       label 'slave1'
-    }
+    agent { label 'slave1' }
+	
+	environment {	
+		DOCKERHUB_CREDENTIALS=credentials('dockerloginid')
+	}
 
-    environment {
-        //be sure to replace "bhavukm" with your own Docker Hub username
-        DOCKER_IMAGE_NAME = "oruguntaramana/train-schedule"
-        DOCKERHUB_CREDENTIALS = credentials('dockerloginid')
-    }
     stages {
-        stage('Build') {
+        stage('SCM_Checkout') {
             steps {
-                echo 'Running build automation'
-                sh './gradlew build --no-daemon'
-                archiveArtifacts artifacts: 'dist/trainSchedule.zip'
+                echo 'Perform SCM_Checkout'
+				git 'https://github.com/ramanaorugunta/cicd-pipeline-train-schedule-autodeploy.git'
             }
-        }
+        }        
         stage('Build Docker Image') {
-            when {
-                branch 'master'
-            }
             steps {
-                script {
-                    app = docker.build(DOCKER_IMAGE_NAME)
-                    app.inside {
-                        sh 'echo Hello, World!'
-                    }
+				sh 'docker version'
+				sh "docker build -t oruguntaramana/ci-cd-train-schedule:${BUILD_NUMBER} ."
+				sh 'docker image list'
+				sh "docker tag oruguntaramana/ci-cd-train-schedule:${BUILD_NUMBER} oruguntaramana/ci-cd-train-schedule:latest"
+            }
+        }
+		stage('Login2DockerHub') {
+
+			steps {
+				sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
+			}
+		}
+		stage('Publish_to_Docker_Registry') {
+			steps {
+				sh "docker push oruguntaramana/ci-cd-train-schedule:latest"
+			}
+		}
+        stage('Deploy to Kubernetes') {
+            steps {
+                script{
+                    sshPublisher(publishers: [sshPublisherDesc(configName: 'Kubernetes_Master', transfers: [sshTransfer(cleanRemote: false, excludes: '', execCommand: 'kubectl apply -f train-schedule-kube.yml', execTimeout: 120000, flatten: false, makeEmptyDirs: false, noDefaultExcludes: false, patternSeparator: '[, ]+', remoteDirectory: '.', remoteDirectorySDF: false, removePrefix: '', sourceFiles: '*.yml')], usePromotionTimestamp: false, useWorkspaceInPromotion: false, verbose: false)])
                 }
             }
-        }
-        stage('Push Docker Image') {
-            when {
-                branch 'master'
-            }
-            steps {
-                script {
-                    docker.withRegistry('https://registry.hub.docker.com', 'dockerloginid') {
-                        app.push("${env.BUILD_NUMBER}")
-                        app.push("latest")
-                    }
-                }
-            }
-        }
-        stage('CanaryDeploy') {
-            when {
-                branch 'master'
-            }
-            environment { 
-                CANARY_REPLICAS = 1
-            }
-            steps {
-                kubernetesDeploy(
-                    kubeconfigId: 'kubeconfig',
-                    configs: 'train-schedule-kube-canary.yml',
-                    enableConfigSubstitution: true
-                )
-            }
-        }
-        stage('DeployToProduction') {
-            when {
-                branch 'master'
-            }
-            environment { 
-                CANARY_REPLICAS = 0
-            }
-            steps {
-                input 'Deploy to Production?'
-                milestone(1)
-                kubernetesDeploy(
-                    kubeconfigId: 'kubeconfig',
-                    configs: 'train-schedule-kube-canary.yml',
-                    enableConfigSubstitution: true
-                )
-                kubernetesDeploy(
-                    kubeconfigId: 'kubeconfig',
-                    configs: 'train-schedule-kube.yml',
-                    enableConfigSubstitution: true
-                )
-            }
-        }
+        }		
     }
 }
